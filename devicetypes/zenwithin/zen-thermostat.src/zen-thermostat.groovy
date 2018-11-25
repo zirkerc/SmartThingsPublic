@@ -4,7 +4,7 @@
  *  Author: Zen Within
  *  Date: 2015-02-21
  *  Updated by SmartThings
- *  Date: 2017-10-12
+ *  Date: 2017-11-12
  */
 metadata {
     definition (name: "Zen Thermostat", namespace: "zenwithin", author: "ZenWithin") {
@@ -15,6 +15,11 @@ metadata {
         capability "Sensor"
         capability "Temperature Measurement"
         capability "Thermostat"
+        capability "Thermostat Heating Setpoint"
+        capability "Thermostat Cooling Setpoint"
+        capability "Thermostat Operating State"
+        capability "Thermostat Mode"
+        capability "Thermostat Fan Mode"
 
         command "setpointUp"
         command "setpointDown"
@@ -23,7 +28,7 @@ metadata {
         // To please some of the thermostat SmartApps
         command "poll"
 
-		fingerprint profileId: "0104", endpointId: "01", inClusters: "0000,0001,0003,0004,0005,0020,0201,0202,0204,0B05", outClusters: "000A, 0019", manufacturer: "Zen Within", model: "Zen-01", deviceJoinName: "Zen Thermostat"
+        fingerprint profileId: "0104", endpointId: "01", inClusters: "0000,0001,0003,0004,0005,0020,0201,0202,0204,0B05", outClusters: "000A, 0019", manufacturer: "Zen Within", model: "Zen-01", deviceJoinName: "Zen Thermostat"
     }
 
     tiles {
@@ -89,8 +94,12 @@ metadata {
         section {
             input("systemModes", "enum",
                 title: "Thermostat configured modes\nSelect the modes the thermostat has been configured for, as displayed on the thermostat",
-                description: "off, heat, cool", defaultValue: "1", required: true, multiple: false,
-                options:["1":"off, heat, cool", "2":"off, auto, heat, cool", "3":"off, emergency heat, heat, cool"]
+                description: "off, heat, cool", defaultValue: "3", required: true, multiple: false,
+                options:["1":"off, heat",
+                        "2":"off, cool",
+                        "3":"off, heat, cool",
+                        "4":"off, auto, heat, cool",
+                        "5":"off, emergency heat, heat, cool"]
             )
         }
     }
@@ -126,9 +135,11 @@ def getSupportedModes() {
 
 def getSupportedModesMap() {
     [
-        "1":["off", "heat", "cool"],
-        "2":["off", "auto", "heat", "cool"],
-        "3":["off", "emergency heat", "heat", "cool"]
+        "1":["off", "heat"],
+        "2":["off", "cool"],
+        "3":["off", "heat", "cool"],
+        "4":["off", "auto", "heat", "cool"],
+        "5":["off", "emergency heat", "heat", "cool"]
     ]
 }
 
@@ -147,7 +158,7 @@ def updated() {
     // make sure supporedModes are in sync
     sendEvent(name: "supportedThermostatModes", value: supportedModes, eventType: "ENTITY_UPDATE", displayed: false)
     // Make sure we poll all attributes from the device
-    state.pollAdditionalData = state.pollAdditionalData - (24 * 60 * 60 * 1000)
+    state.pollAdditionalData = state.pollAdditionalData ? state.pollAdditionalData - (24 * 60 * 60 * 1000) : null
     // initialize() needs to be called after device details has been updated() but as installed() also calls this method and
     // that LiveLogging shows updated is being called more than one time, try avoiding multiple config/poll be done us runIn ;o(
     runIn(3, "initialize", [overwrite: true])
@@ -413,14 +424,14 @@ def updateBatteryStatus(rawValue) {
         // customAttribute in order to change UI icon/label
         def eventMap = [name: "batteryIcon", value: "err_battery", displayed: false]
         def linkText = getLinkText(device)
-        if (volts < 62 && volts != 0 && volts != 255) {
-            def minVolts = 34  // voltage when device UI starts to die
-            def maxVolts = 61  // 4 batteries at 1.5V should be 6.0V, however logs from users show 6,1 as well
-            def pct = (volts - minVolts) / (maxVolts - minVolts)
-            eventMap.value = Math.min(100, (int) pct * 100)
+        if (volts != 255) {
+            def minVolts = 34  // voltage when device UI starts to die, ie. when battery fails
+            def maxVolts = 60  // 4 batteries at 1.5V (6.0V)
+            def pct = (volts > minVolts) ? ((volts - minVolts) / (maxVolts - minVolts)) : 0
+            eventMap.value = Math.min(100, (int)(pct * 100))
             // Update capability "Battery"
             sendEvent(name: "battery", value: eventMap.value, descriptionText: "${getLinkText(device)} battery was ${eventMap.value}%")
-            eventMap.value = eventMap.value > 10 ? eventMap.value : "low_battery"
+            eventMap.value = eventMap.value > 15 ? eventMap.value : "low_battery"
         }
         sendEvent(eventMap)
     } else {
@@ -555,7 +566,7 @@ def alterSetpoint(raise, targetValue = null, setpoint = null) {
                 unit: locationScale, eventType: "ENTITY_UPDATE")//, displayed: false)
         def data = [targetHeatingSetpoint:heatingSetpoint, targetCoolingSetpoint:coolingSetpoint]
         // Use runIn to reduce chances UI is toggling the value
-        runIn(5, "updateSetpoints", [data: data, overwrite: true])
+        runIn(3, "updateSetpoints", [data: data, overwrite: true])
     }
 }
 
@@ -611,10 +622,12 @@ def updateSetpoints() {
 def updateSetpoints(data) {
     def cmds = []
     if (data.targetHeatingSetpoint) {
+        sendEvent(name: "heatingSetpoint", value: getTempInLocalScale(data.targetHeatingSetpoint, "C"), unit: getTemperatureScale())
         cmds += zigbee.writeAttribute(THERMOSTAT_CLUSTER, ATTRIBUTE_OCCUPIED_HEATING_SETPOINT, typeINT16,
                 hexString(Math.round(data.targetHeatingSetpoint*100.0), 4))
     }
     if (data.targetCoolingSetpoint) {
+        sendEvent(name: "coolingSetpoint", value: getTempInLocalScale(data.targetCoolingSetpoint, "C"), unit: getTemperatureScale())
         cmds += zigbee.writeAttribute(THERMOSTAT_CLUSTER, ATTRIBUTE_OCCUPIED_COOLING_SETPOINT, typeINT16,
                 hexString(Math.round(data.targetCoolingSetpoint*100.0), 4))
     }
